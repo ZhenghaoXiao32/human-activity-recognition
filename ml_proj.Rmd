@@ -1,0 +1,170 @@
+---
+title: "Human Activity Recognition"
+author: "Zhenghao Xiao"
+date: "7/2/2020"
+output: 
+  html_document:
+    keep_md: yes
+  md_document:
+    variant: markdown_github
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it.
+
+The goal of this project is to recognize human weight lifting activity using data from accelertometers on the belt, forearm, arm, and dumbell of 6 participants. More information about the human activity recognition is available [here](http://groupware.les.inf.puc-rio.br/har).
+
+## Required packages
+```{r, results='hide',warning=FALSE, message=FALSE}
+library(tidyverse)
+library(caret)
+library(gbm)
+```
+
+## Data importing
+
+```{r}
+download_training <- function(){      
+      file_name <- "pml-training.csv"
+      if (!file.exists(file_name)) {
+            file_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+            download.file(file_url, file_name, method = "curl")
+      }
+}
+
+download_testing <- function(){      
+      file_name <- "pml-testing.csv"
+      if (!file.exists(file_name)) {
+            file_url <- "https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+            download.file(file_url, file_name, method = "curl")
+      }
+}
+
+download_training()
+download_testing()
+
+training_raw <- read.csv("pml-training.csv", na = c("", "NA"))
+testing_raw <- read.csv("pml-testing.csv", na = c("", "NA")) 
+```
+
+## Data preprocessing
+
+```{r}
+dim(training_raw)
+```
+
+```{r}
+colnames(training_raw)
+```
+
+### Missing value analysis
+
+```{r}
+missing_values <- training_raw %>%
+      gather(key = "key", value = "val") %>%
+      mutate(is.missing = is.na(val)) %>%
+      group_by(key, is.missing) %>%
+      summarize(num_missing = n()) %>%
+      filter(is.missing == TRUE) %>%
+      select(-is.missing) %>%
+      arrange(desc(num_missing))
+missing_values
+```
+
+### Feature selection
+
+All these columns has 19216 missing values, while the total observation count is 19622. Thus, we need to remove those columns.
+Besides, the timestamps and X1 are not needed for our analysis either. 
+
+```{r}
+delete_cols <- c(colnames(training_raw)[c(1, 3, 4, 5)], missing_values$key)
+
+training_clean1 <- training_raw[, !(colnames(training_raw) %in% delete_cols)]
+testing_clean1 <- testing_raw[, !(colnames(testing_raw) %in% delete_cols)]
+```
+
+#### Filter near zero variance variables
+
+```{r}
+nzv <- nearZeroVar(training_clean1)
+training_clean2 <- training_clean1[, - nzv]
+testing_clean2 <- testing_clean1[, - nzv]
+```
+
+Because the model I planned to use is the boost tree model, so the highly correlated variables can be ignored.
+Also we need to convert the string variables to factors:
+
+```{r}
+training_clean2$user_name <- as.factor(training_clean2$user_name)
+training_clean2$classe <- as.factor(training_clean2$classe)
+
+training_cleaned <- training_clean2
+testing_cleaned <- testing_clean2
+```
+
+## Building model
+
+Create data partition for training and testing:
+
+```{r}
+set.seed(1234)
+inTraining <- createDataPartition(training_cleaned$classe, p = .75, list = FALSE)
+training <- training_cleaned[inTraining, ]
+testing <- training_cleaned[-inTraining, ]
+```
+
+Using cross-validation on training set with grid search to tuning parameters for gbm model:
+
+```{r}
+fitControl <- trainControl(method = "cv",
+                           number = 10)
+
+gbmGrid <- expand.grid(interaction.depth = c(1, 5, 9),
+                       n.trees = (1:30) * 50,
+                       shrinkage = 0.1,
+                       n.minobsinnode = 20)
+
+set.seed(1234)
+gbmFit <- train(classe ~ ., data = training,
+                method = "gbm",
+                trControl = fitControl,
+                verbose = FALSE,
+                tuneGrid = gbmGrid)
+
+gbmFit
+```
+
+Examine the relationship between the estimates of performance and the tuning parameters:
+
+```{r, warning=FALSE, message=FALSE}
+trellis.par.set(caretTheme())
+plot(gbmFit)
+```
+
+## Prediciting on testing data
+
+Build a confusion matrix to see the predicted result on testing set.
+
+```{r}
+y_pred <- predict(gbmFit, newdata = testing)
+confusionMatrix(data = y_pred, reference = testing$classe)
+```
+
+We can see the model reached 0.9994 accuracy on the testing set while the acccuracy on training set was 0.9996. Only 3 obseravtions were predicted wrong. 
+
+## Using the model on new data:
+
+```{r}
+predict(gbmFit, newdata = testing_cleaned)
+```
+
+## Summary
+
+In this project, we built a generalized boosted tree model, tuned the parameters with k-fold cross-validation, and reached 0.9994 accuracy on the testing data. 
+
